@@ -1,0 +1,580 @@
+import pandas as pd                    
+import matplotlib.pyplot as plt     
+import datetime                
+import numpy as np             
+
+MESES_ES = [
+    "",'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+]
+
+DIAS_ORDEN = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sabado", "Domingo"]
+
+DIAS_ES = {
+    "Monday":"Lunes", "Tuesday":"Martes", "Wednesday":"Miércoles", "Thursday":"Jueves",
+    "Friday":"Viernes", "Saturday":"Sabado", "Sunday":"Domingo"   
+}
+HORAS_12H = [
+    "12 AM", "1 AM", "2 AM", "3 AM", "4 AM", "5 AM", "6 AM", "7 AM",
+    "8 AM", "9 AM", "10 AM", "11 AM", "12 PM", "1 PM", "2 PM", "3 PM",
+    "4 PM", "5 PM", "6 PM", "7 PM", "8 PM", "9 PM", "10 PM", "11 PM"
+]
+
+ruta="D:/yape/reporte.xlsx"
+df=pd.read_excel(ruta, skiprows=4)
+
+def cl_df(df):                   
+    df= df.copy()
+    df= df.rename(columns={
+    "Tipo de Transacción": "tipo",
+    "Origen": "origen",
+    "Destino": "destino",
+    "Monto": "monto",
+    "Mensaje": "mensaje",
+    "Fecha de operación": "fecha_ope",
+    })
+
+    df= df.dropna(axis=0, how='all')  
+    df.insert(0,"id", range(1, len(df) + 1))  
+
+    for col in ["tipo", "destino", "origen"]:
+        if col in df.columns:
+            df[col] = df[col].str.strip().str.lower()  
+    def clas_mov(tipo):
+        if "te pagó" in tipo:                 
+            return "ingreso"
+        else: 
+            return "egreso"
+    if "tipo" in df.columns:
+        df["movimiento"]= df["tipo"].apply(clas_mov)
+
+    if "origen" in df.columns:
+        df["banco_origen"] = df["origen"].str.extract(r'^(plin|bcp)\s*-\s*').fillna("bcp")        
+        df["origen"] = df["origen"].str.replace(r'^(plin|bcp)\s*-\s*', '', regex=True).str.strip()     
+        
+    if "destino" in df.columns:
+        df["banco_destino"] = df["destino"].str.extract(r'^(plin|bcp)\s*-\s*').fillna("bcp")
+        df["destino"] = df["destino"].str.replace(r'^(plin|bcp)\s*-\s*', '', regex=True).str.strip()
+
+    if "monto" in df.columns :
+        df["monto"] = pd.to_numeric(df["monto"], errors="coerce").fillna(0)        
+
+    if "fecha_ope" in df.columns:
+        df["fecha_ope"] = pd.to_datetime(df["fecha_ope"], format="%d/%m/%Y %H:%M:%S", errors="coerce")      
+        df["fecha"]   = df["fecha_ope"].dt.date
+        df["anio"]    = df["fecha_ope"].dt.year
+        df["mes"]     = df["fecha_ope"].dt.month
+        df["hora"]    = df["fecha_ope"].dt.hour
+        df["semana"]  = df["fecha_ope"].dt.isocalendar().week
+        df["dia_sem"] = df["fecha_ope"].dt.day_name().map(DIAS_ES)        
+        df["mes_nom"] = df["mes"].apply(lambda x: MESES_ES[int(x)] if pd.notna(x) else "")                              
+    return df
+
+df = cl_df(df)                  
+
+def mes_nom_es(periodo):
+    año, mes = periodo.split('-')
+    return f"{MESES_ES[int(mes)]} {año}"
+
+def rango_semana_es(anyo_sem):
+    año, semana = anyo_sem.split("-S")
+    año = int(año)
+    semana = int(semana)
+    inicio_sem = pd.to_datetime(f'{año}-W{semana}-1', format='%G-W%V-%u')
+    fin_sem = inicio_sem + pd.Timedelta(days=6)
+    nom_inicio = f"{MESES_ES[inicio_sem.month]} {inicio_sem.day}"
+    nom_fin = f"{MESES_ES[fin_sem.month]} {fin_sem.day}"
+    return f"{anyo_sem}\n({nom_inicio} - {nom_fin})"
+
+#Grafico de ingresos y egresos
+
+def graf_ing_egre(df, inicio, fin=None, por ="dia"):    
+    if fin is None:                                    
+        fin = inicio
+    if por =="dia":
+        inicio = pd.to_datetime(inicio)
+        fin = pd.to_datetime(fin)
+        mask = (df["fecha_ope"].dt.date >= inicio.date()) & (df["fecha_ope"].dt.date <= fin.date()) 
+        df_filt = df[mask]                                  
+        agrup = "fecha"
+        pivot = df_filt.groupby(["movimiento",agrup])["monto"].sum().unstack(fill_value=0) 
+        xlabel = "Fecha"
+    elif por =="mes":
+        inicio = pd.to_datetime(f"{inicio}-01")       
+        fin = pd.to_datetime(f"{fin}-01") + pd.offsets.MonthEnd(0)      
+        mask = (df["fecha_ope"] >= inicio) & (df["fecha_ope"] <= fin)
+        df_copia = df.copy()
+        df_copia["año_mes"] = df_copia["fecha_ope"].dt.to_period("M").astype(str)  
+        df_filt = df_copia[mask]
+        agrup = "año_mes"
+        pivot = df_filt.groupby(["movimiento", agrup,])["monto"].sum().unstack(fill_value=0) 
+        pivot.columns = [mes_nom_es(m) for m in pivot.columns]          
+        xlabel= "Mes"
+    elif por == "anio":
+        inicio = int(inicio)       
+        fin = int(fin)
+        mask= (df["anio"]>= inicio) & (df["anio"]<= fin)     
+        df_filt = df[mask]
+        agrup = "anio"
+        pivot = df_filt.groupby(["movimiento",agrup])["monto"].sum().unstack(fill_value=0) 
+        xlabel = "Año"
+    elif por == "semana":
+        inicio = pd.to_datetime(inicio)
+        fin = pd.to_datetime(fin)
+        mask = (df["fecha_ope"]>=inicio) & (df["fecha_ope"]<=fin)
+        df_copia = df.copy()
+        df_copia["semana"] = df_copia["fecha_ope"].dt.isocalendar().week               
+        df_copia["año"] =  df_copia["fecha_ope"].dt.isocalendar().year                 
+        df_copia["año_sem"] = df_copia["año"].astype(str) + "-S" + df_copia["semana"].astype(str).str.zfill(2)  
+        df_filt= df_copia[mask]
+        agrup = "año_sem"
+        pivot = df_filt.groupby(["movimiento", agrup])["monto"].sum().unstack(fill_value=0)
+        pivot.columns = [rango_semana_es(col) for col in pivot.columns]
+        xlabel = "Semana"
+    else:
+        raise ValueError("debe ser por dia,semana, mes o año")
+    if df_filt.empty:
+        print("No hay datos para el rango seleccionado")
+        return None
+    if por =="anio":   
+        titulo_rango = f"{inicio} a {fin}"
+    else:
+        try:
+            titulo_rango=f"{inicio.date()} a {fin.date()}"
+        except Exception:
+            titulo_rango = f"{inicio} a {fin}"
+    ax = pivot.T.plot(kind="bar", stacked=False, figsize=(12,7))
+    plt.ylim(top=pivot.values.max()*1.15)
+    for bars in ax.containers:
+        ax.bar_label(bars, fmt="{:0.0f}", rotation= 45, padding=3, label_type="edge", fontsize=8)
+    plt.title(f"Ingresos y Egresos por {por}({titulo_rango})")
+    plt.ylabel("Monto total")      
+    plt.xlabel(xlabel)              
+    plt.tight_layout()              
+    plt.xticks(rotation=45)         
+    plt.show()
+    return df_filt
+
+# Grafico de clientes
+
+def graf_cli(df, por="dia", inicio= None, fin= None, top_n=20, seed=42, cliente=None):
+    clientes = df[df["movimiento"]== "ingreso"].copy()
+    if inicio is None:      
+        if por == "dia" or por == "semana":        
+            inicio = df["fecha_ope"].max().date()           
+        elif por == "mes":
+            inicio = df["fecha_ope"].max().strftime("%Y-%m")
+        elif por == "anio":                        
+            inicio = df["fecha_ope"].min().year
+    if por == "dia":
+        fin = fin or inicio                         
+        if isinstance(inicio, str):
+            inicio = pd.to_datetime(inicio).date()  
+        if isinstance(fin, str):
+            fin = pd.to_datetime(fin).date()        
+        if pd.api.types.is_datetime64_any_dtype(clientes["fecha"]):    
+            clientes["fecha"] = clientes["fecha"].dt.date
+        clientes = clientes[(clientes['fecha'] >= inicio) & (clientes['fecha'] <= fin)]    
+    elif por == "semana":
+        if isinstance(inicio, str):
+            inicio = pd.to_datetime(inicio)
+        semana_ini = inicio.isocalendar().week
+        año_ini = inicio.isocalendar().year
+        clientes["semana"] = clientes["fecha_ope"].dt.isocalendar().week
+        clientes["anio"] = clientes["fecha_ope"].dt.isocalendar().year
+        clientes = clientes[(clientes["semana"] == semana_ini) & (clientes["anio"] == año_ini)]
+    elif por =="mes":
+        fin = fin or inicio
+        inicio_dt = pd.to_datetime(f"{inicio}-01") 
+        fin_dt = pd.to_datetime(f"{fin}-01") + pd.offsets.MonthEnd(0)
+        clientes = clientes[(clientes["fecha_ope"]>= inicio_dt) & (clientes["fecha_ope"] <= fin_dt)]
+    elif por =="anio":
+        fin=fin or inicio
+        inicio = int(inicio)
+        fin = int(fin)
+        clientes=clientes[(clientes["anio"]>= inicio)& (clientes["anio"]<= fin)]
+    if cliente is not None and cliente.strip() != "":
+        clientes = clientes[clientes['origen'] == cliente.strip().lower()]
+        top_n = 1    
+    sum_cli = clientes.groupby("origen")["monto"].sum().sort_values(ascending=False).head(top_n)
+    if sum_cli.empty:
+        print("No hay datos")
+        return
+    colormap = list(plt.cm.tab20.colors)
+    np.random.seed(seed)
+    np.random.shuffle(colormap)
+    colores = colormap[:len(sum_cli)]
+    if por == "dia":
+        rango_str = f"{inicio}" if inicio == fin else f"{inicio} a {fin}"
+    elif por == "semana":
+        rango_str = f"Semana {inicio.isocalendar().week}, {inicio.isocalendar().year}"
+    elif por == "mes":
+        rango_str = f"{inicio}" if inicio == fin else f"{inicio} a {fin}"
+    elif por == "anio":
+        rango_str = f"{inicio}" if inicio == fin else f"{inicio} a {fin}"
+    else:
+        rango_str = ""
+
+    if cliente:
+        titulo = f"Cliente: {cliente.strip().title()}\nMonto Total ({rango_str})"
+    else:
+        titulo = f"Top {top_n} Clientes por {por}\n({rango_str})"
+    fig, ax = plt.subplots(figsize=(10, 7))
+    sum_cli.plot(kind="barh", ax=ax, color=colores)
+    ax.set_title(titulo, fontsize=15)
+    ax.set_xlabel("Monto total")
+    ax.set_ylabel("Cliente")
+    ax.invert_yaxis()
+    for i, v in enumerate(sum_cli):
+        ax.text(v +max(sum_cli)*0.01, i, f"{v:,.0f}", va ="center", fontsize=9)
+    plt.tight_layout()
+    plt.show()
+
+#grafico de proveedores
+
+def graf_prov(df, por="dia", inicio=None, fin=None, top_n=20, seed=42, proveedor=None):
+    prov = df[df["movimiento"] == "egreso"].copy()
+    if inicio is None:
+        if por == "dia" or por == "semana":
+            inicio = df["fecha_ope"].max().date()
+        elif por == "mes":
+            inicio = df["fecha_ope"].max().strftime("%Y-%m")
+        elif por == "anio":
+            inicio = df["fecha_ope"].max().year
+    # ---- Filtros por periodo ----
+    if por == "dia":
+        fin = fin or inicio
+        if isinstance(inicio, str):
+            inicio = pd.to_datetime(inicio).date()
+        if isinstance(fin, str):
+            fin = pd.to_datetime(fin).date()
+        if pd.api.types.is_datetime64_any_dtype(prov["fecha"]):
+            prov["fecha"] = prov["fecha"].dt.date
+        prov = prov[(prov["fecha"] >= inicio) & (prov["fecha"] <= fin)]
+    elif por == "semana":
+        if isinstance(inicio, str):
+            inicio = pd.to_datetime(inicio)
+        semana_ini = inicio.isocalendar().week
+        año_ini = inicio.isocalendar().year
+        prov["semana"] = prov["fecha_ope"].dt.isocalendar().week
+        prov["anio"] = prov["fecha_ope"].dt.isocalendar().year
+        prov = prov[(prov["semana"] == semana_ini) & (prov["anio"] == año_ini)]
+    elif por == "mes":
+        fin = fin or inicio
+        inicio_dt = pd.to_datetime(f"{inicio}-01")
+        fin_dt = pd.to_datetime(f"{fin}-01") + pd.offsets.MonthEnd(0)
+        prov = prov[(prov["fecha_ope"] >= inicio_dt) & (prov["fecha_ope"] <= fin_dt)]
+    elif por == "anio":
+        fin = fin or inicio
+        inicio = int(inicio)
+        fin = int(fin)
+        prov = prov[(prov["anio"] >= inicio) & (prov["anio"] <= fin)]
+    if proveedor is not None and str(proveedor).strip() != "":
+        prov = prov[prov["destino"] == str(proveedor).strip().lower()]
+        top_n = 1
+    # ---- Agrupamiento y gráfico ----
+    sum_prov = prov.groupby("destino")["monto"].sum().sort_values(ascending=False).head(top_n)
+    if sum_prov.empty:
+        print("No hay datos")
+        return
+    colormap = list(plt.cm.tab20.colors)
+    np.random.seed(seed)
+    np.random.shuffle(colormap)
+    colores = colormap[:len(sum_prov)]
+    # ---- Título ----
+    if por == "dia":
+        rango_str = f"{inicio}" if inicio == fin else f"{inicio} a {fin}"
+    elif por == "semana":
+        inicio_semana = inicio - pd.Timedelta(days=inicio.weekday())
+        fin_semana = inicio_semana + pd.Timedelta(days=6)
+        mes_inicio = MESES_ES[inicio_semana.month]
+        mes_fin = MESES_ES[fin_semana.month]
+        rango_str = f"{mes_inicio} {inicio_semana.day} - {mes_fin} {fin_semana.day}, {inicio_semana.year}"  
+    elif por == "mes":
+        rango_str = f"{inicio}" if inicio == fin else f"{inicio} a {fin}"
+    elif por == "anio":
+        rango_str = f"{inicio}" if inicio == fin else f"{inicio} a {fin}"
+    else:
+        rango_str = ""
+    if proveedor:
+        titulo = f"Proveedor: {str(proveedor).strip().title()}\nMonto Total ({rango_str})"
+    else:
+        titulo = f"Top {top_n} Proveedores por {por}\n({rango_str})"
+    fig, ax = plt.subplots(figsize=(10, 7))
+    sum_prov.plot(kind="barh", ax=ax, color=colores)
+    ax.set_title(titulo, fontsize=15)
+    ax.set_xlabel("Monto total")
+    ax.set_ylabel("Proveedor")
+    ax.invert_yaxis()
+    for i, v in enumerate(sum_prov):
+        ax.text(v + max(sum_prov) * 0.01, i, f"{v:,.0f}", va="center", fontsize=9)
+    plt.tight_layout()
+    plt.show()
+        
+# Grafico de ingresos por hora
+
+def graf_ing_xh(df, por="dia", inicio=None, fin=None, cmap=plt.cm.viridis, usar_12h=False):
+    ingresos = df[df["movimiento"] == "ingreso"].copy()
+    fin = fin or inicio
+    if por == "dia":
+        inicio = pd.to_datetime(inicio).date()
+        fin = pd.to_datetime(fin).date()
+        ingresos = ingresos[(ingresos["fecha"] >= inicio) & (ingresos["fecha"] <= fin)]
+    elif por == "mes":
+        inicio_dt = pd.to_datetime(f"{inicio}-01")
+        fin_dt = pd.to_datetime(f"{fin}-01") + pd.offsets.MonthEnd(0)
+        ingresos = ingresos[(ingresos["fecha_ope"] >= inicio_dt) & (ingresos["fecha_ope"] <= fin_dt)]
+    elif por == "anio":
+        inicio = int(inicio)
+        fin = int(fin)
+        ingresos = ingresos[(ingresos["anio"] >= inicio) & (ingresos["anio"] <= fin)]
+    elif por == "semana":
+        inicio = pd.to_datetime(inicio)
+        fin = pd.to_datetime(fin)
+        ingresos = ingresos[(ingresos["fecha_ope"] >= inicio) & (ingresos["fecha_ope"] <= fin)]
+
+    if ingresos.empty:
+        print("no hay datos")
+        return
+
+    ingresos["hora"] = ingresos["fecha_ope"].dt.hour
+    sum_xh = ingresos.groupby("hora")["monto"].sum()
+    norm = plt.Normalize(sum_xh.min(), sum_xh.max())
+    colores = cmap(norm(sum_xh.values))
+    fig, ax = plt.subplots(figsize=(12, 6))
+    bars = ax.bar(sum_xh.index, sum_xh.values, color=colores)
+    ax.set_title("Suma de Monto por Hora", fontsize=16)
+    ax.set_xlabel("Hora", fontsize=12)
+    ax.set_ylabel("Suma de Monto", fontsize=12)
+    ax.set_xticks(range(24))
+    if usar_12h:
+        ax.set_xticklabels(HORAS_12H, rotation=45)
+    else:
+        ax.set_xticklabels(range(24))
+    max_y = max(sum_xh.max()*1.2, 500)
+    ax.set_ylim(0, max_y)
+    for bar in bars:
+        yval = bar.get_height()
+        if yval > 0:
+            if yval < 1000:
+                label = f"{yval:.0f}"
+            else:
+                label = f"{yval/1000:.1f} mil"
+            ax.text(bar.get_x() + bar.get_width() / 2.0, yval + max_y * 0.015,
+                    label, ha="center", va="bottom", fontsize=8)
+            
+    if por == "dia":
+        fecha_label = f"({inicio})" if inicio == fin else f"({inicio} a {fin})"
+    elif por == "semana":
+        # Para semana, muestra lunes y domingo
+        lunes = inicio - pd.Timedelta(days=inicio.weekday())
+        domingo = lunes + pd.Timedelta(days=6)
+        fecha_label = f"({lunes.date()} a {domingo.date()})"
+    elif por == "mes":
+        fecha_label = f"({inicio})" if inicio == fin else f"({inicio} a {fin})"
+    elif por == "anio":
+        fecha_label = f"({inicio})" if inicio == fin else f"({inicio} a {fin})"
+    else:
+        fecha_label = ""
+
+    ax.set_title(f"Ventas por hora\n{fecha_label}", fontsize=16)
+
+    plt.tight_layout()
+    plt.grid(axis="y", linestyle="--", alpha=0.3)
+    plt.show()
+
+#Grafico de egresos por hora
+
+def graf_egre_xh(df, por="dia", inicio=None, fin=None, cmap=plt.cm.viridis, usar_12h=False):
+    egresos = df[df["movimiento"] == "egreso"].copy()
+    fin = fin or inicio
+    if por == "dia":
+        inicio = pd.to_datetime(inicio).date()
+        fin = pd.to_datetime(fin).date()
+        egresos = egresos[(egresos["fecha"] >= inicio) & (egresos["fecha"] <= fin)]
+    elif por == "mes":
+        inicio_dt = pd.to_datetime(f"{inicio}-01")
+        fin_dt = pd.to_datetime(f"{fin}-01")+ pd.offsets.MonthEnd(0)
+        egresos = egresos[(egresos["fecha_ope"] >= inicio_dt) & (egresos["fecha_ope"] <= fin_dt)]
+    elif por == "anio":
+        inicio = int(inicio)
+        fin = int(fin)
+        egresos = egresos[(egresos["anio"] >= inicio) & (egresos["anio"] <= fin)]
+    elif por == "semana":
+        inicio = pd.to_datetime(inicio)
+        fin = pd.to_datetime(fin)
+        egresos = egresos[(egresos["fecha_ope"]>= inicio) & (egresos["fecha_ope"]<=fin)]
+    if egresos.empty:
+        print("no hay datos")
+        return
+    
+    egresos["hora"] = egresos["fecha_ope"].dt.hour
+    sum_xh = egresos.groupby("hora")["monto"].sum()
+    norm = plt.Normalize(sum_xh.min(), sum_xh.max())
+    colores = cmap(norm(sum_xh.values))
+    fig, ax = plt.subplots(figsize=(12,6))
+    bars = ax.bar(sum_xh.index, sum_xh.values, color=colores)
+    ax.set_title("Suma de Monto por Hora", fontsize=16)
+    ax.set_xlabel("Hora", fontsize=12)
+    ax.set_ylabel("Suma de monto", fontsize=12)
+    ax.set_xticks(range(24))
+    if usar_12h:
+        ax.set_xticklabels(HORAS_12H, rotation=45)
+    else:
+        ax.set_xticklabels(range(24))
+    max_y = max(sum_xh.max()*1.2,500)
+    ax.set_ylim(0, max_y)
+    for bar in bars:
+        yval =bar.get_height()
+        if yval > 0:
+            if yval < 1000:
+                label = f"{yval:.0f}"
+            else:
+                label = f"{yval/1000:.1f} mil"
+            ax.text(bar.get_x() + bar.get_width() / 2.0, yval + max_y*0.015,
+                    label, ha="center", va="bottom", fontsize=8)
+    if por == "dia":
+        fecha_label = f"({inicio})" if inicio == fin else f"({inicio} a {fin})"
+    elif por == "semana":
+        lunes = inicio - pd.Timedelta(days=inicio.weekday())
+        domingo = lunes + pd.Timedelta(days=6)
+        fecha_label = f"({lunes.date()} a {domingo.date()})"
+    elif por == "mes":
+        fecha_label = f"({inicio})" if inicio == fin else f"({inicio} a {fin})"
+    elif por == "anio":
+        fecha_label = f"{inicio}" if inicio == fin else f"({inicio} a {fin})"
+    else:
+        fecha_label=""
+    ax.set_title(f"Pagos por hora\n{fecha_label}", fontsize=16)
+    plt.tight_layout()
+    plt.grid(axis="y", linestyle="--", alpha=0.3)
+    plt.show()
+
+#Grafico de ingresos por dia de semana
+
+def graf_ing_xds(df, inicio = None, fin=None, cmap=plt.cm.viridis):
+    ingresos = df[df["movimiento"]== "ingreso"].copy()
+    if not inicio:
+        ingresos_filt = ingresos
+        rango_label = "Todo el periodo"
+    else:
+        if len(str(inicio)) == 4:
+            año = int(inicio)
+            año_fin = int(fin) if fin else año
+            inicio_dt = pd.to_datetime(f"{inicio}-01-01")
+            fin_dt = pd.to_datetime(f"{fin}-12-31") if fin else pd.to_datetime(f"{inicio}-12-31")
+            rango_label = f"{año}" if año == año_fin else f"{año} a {año_fin}"
+            ingresos_filt = ingresos[(ingresos["fecha_ope"] >= inicio_dt) & (ingresos["fecha_ope"] <= fin_dt)]
+        elif len(str(inicio)) == 7:
+            año, mes = map(int, str(inicio).split("-"))
+            if fin and len(str(fin)) == 7:
+                año_f, mes_f = map(int, str(fin).split("-"))
+            else:
+                año_f, mes_f = año, mes    
+            inicio_dt = pd.to_datetime(f"{año}-{mes:02d}-01")
+            fin_dt = pd.to_datetime(f"{año_f}-{mes_f:02d}-01") + pd.offsets.MonthEnd(0)
+            mes_label = f"{MESES_ES[mes]} {año}"
+            mes_label_fin = f"{MESES_ES[mes_f]} {año_f}"
+            rango_label = mes_label if (año == año_f and mes == mes_f) else f"{mes_label} a {mes_label_fin}"
+            ingresos_filt = ingresos[(ingresos["fecha_ope"] >= inicio_dt) & (ingresos["fecha_ope"] <= fin_dt)]
+        else:
+            fecha = pd.to_datetime(inicio)
+            if not fin:
+                lunes = fecha - pd.Timedelta(days=fecha.weekday())
+                domingo = lunes + pd.Timedelta(days=6)
+                inicio_dt, fin_dt = lunes, domingo
+                fin_dt = fin_dt + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                rango_label = f"{lunes.strftime('%d/%m/%Y')} a {domingo.strftime('%d/%m/%Y')}"
+            else:
+                inicio_dt = fecha
+                fin_dt = pd.to_datetime(fin)
+                rango_label = f"{inicio_dt.strftime('%d/%m/%Y')} a {fin_dt.strftime('%d/%m/%Y')}"
+            ingresos_filt = ingresos[(ingresos["fecha_ope"] >= inicio_dt) & (ingresos["fecha_ope"] <= fin_dt)]
+    if ingresos_filt.empty:
+        print("No hay datos")
+        return
+    ingresos_filt["dia_semana"] = ingresos_filt["fecha_ope"].dt.dayofweek.map(lambda x: DIAS_ORDEN[x])
+    sum_xd= ingresos_filt.groupby("dia_semana")["monto"].sum().reindex(DIAS_ORDEN).fillna(0)
+    norm= plt.Normalize(sum_xd.min(), sum_xd.max())
+    colores =cmap(norm(sum_xd.values))
+    fig, ax = plt.subplots(figsize=(10,6))
+    bars= ax.bar(DIAS_ORDEN, sum_xd.values, color=colores)
+    ax.set_title(f"Ventas por Día de la Semana\n({rango_label})", fontsize=15)
+    ax.set_xlabel("Día", fontsize=12)
+    ax.set_ylabel("Suma de Monto", fontsize=12)
+    max_y = max(sum_xd.max()*1.2,500)
+    ax.set_ylim(0,max_y)
+    for bar, dia in zip(bars, DIAS_ORDEN):
+        yval = bar.get_height()
+        if yval >0:
+            label = f"{yval:.0f}" if yval < 1000 else f"{yval/1000:.1f} mill"
+            ax.text(bar.get_x() + bar.get_width()/2.0, yval + max_y * 0.015,
+                    label, ha="center", va="bottom", fontsize=9)
+    plt.tight_layout()
+    plt.grid(axis="y", linestyle="--", alpha=0.3)
+    plt.show()
+
+# Grafico de egresos x dias de semana
+
+def graf_egr_xds(df, inicio = None, fin = None, cmap=plt.cm.viridis):
+    egresos =  df[df["movimiento"] == "egreso"].copy()
+    if not inicio:
+        egresos_filt = egresos
+        rango_label=  " Todo el periodo"
+    else:
+        if len(str(inicio)) == 4:
+            año = int(inicio)
+            año_fin = int(fin) if fin else año
+            inicio_dt = pd.to_datetime(f"{inicio}-01-01")
+            fin_dt = pd.to_datetime(f"{año_fin}-12-31") + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            rango_label = f"{año}" if año == año_fin else f"{año} a {año_fin}"
+            egresos_filt = egresos[(egresos["fecha_ope"] >= inicio_dt) & (egresos["fecha_ope"] <= fin_dt)]
+        elif len(str(inicio)) == 7:
+            año, mes = map(int, str(inicio).split("-"))
+            if fin and len(str(fin)) == 7:
+                año_f, mes_f = map(int, str(fin).split("-"))
+            else:
+                año_f, mes_f = año, mes
+            inicio_dt = pd.to_datetime(f"{año}-{mes:02d}-01")
+            fin_dt = pd.to_datetime(f"{año_f}-{mes_f:02d}-01") + pd.offsets.MonthEnd(0)
+            fin_dt = fin_dt + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            mes_label = f"{MESES_ES[mes]} {año}"
+            mes_label_fin = f"{MESES_ES[mes_f]}{año_f}"
+            rango_label = mes_label if (año == año_f and mes == mes_f) else f"{mes_label} a {mes_label_fin}"
+            egresos_filt = egresos[(egresos["fecha_ope"] >= inicio_dt) & (egresos["fecha_ope"] <= fin_dt)]
+        else:
+            fecha = pd.to_datetime(inicio)
+            if not fin:
+                lunes = fecha - pd.Timedelta(days=fecha.weekday())
+                domingo = lunes + pd.Timedelta(days=6)
+                inicio_dt, fin_dt = lunes, domingo
+                fin_dt = fin_dt + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                rango_label= f"{lunes.strftime('%d/%m/%Y')} a {domingo.strftime('%d/%m/%Y')}"
+            else:
+                inicio_dt = fecha
+                fin_dt = pd.to_datetime(fin)
+                rango_label = f"{inicio_dt.strftime('%d/%m/%Y')} a {fin_dt.strftime('%d/%m/%Y')}"
+            egresos_filt = egresos[(egresos["fecha_ope"] >= inicio_dt) & (egresos["fecha_ope"] <= fin_dt)]
+    if egresos_filt.empty:
+        print("No hay datos")
+        return
+    egresos_filt["dia_semana"] = egresos_filt["fecha_ope"].dt.dayofweek.map(lambda x: DIAS_ORDEN[x])
+    sum_xd= egresos_filt.groupby("dia_semana")["monto"].sum().reindex(DIAS_ORDEN).fillna(0)
+    norm = plt.Normalize(sum_xd.min(), sum_xd.max())
+    colores = cmap(norm(sum_xd.values))
+    fig, ax = plt.subplots(figsize=(10,6))
+    bars = ax.bar(DIAS_ORDEN, sum_xd.values, color=colores)
+    ax.set_title(f"Pagos por Día de la Semana \n({rango_label})", fontsize=15)
+    ax.set_xlabel("Día", fontsize=12)
+    ax.set_ylabel("Suma de Monto", fontsize=12)
+    max_y = max(sum_xd.max()*1.2,500)
+    ax.set_ylim(0,max_y)
+    for bar, dia in zip(bars, DIAS_ORDEN):
+        yval= bar.get_height()
+        if yval > 0 :
+            label = f"{yval:.0f}" if yval < 1000 else f"{yval/1000:.1f} mill"
+            ax.text(bar.get_x() + bar.get_width()/2.0, yval + max_y * 0.015,
+                    label, ha="center", va="bottom", fontsize=9)
+    plt.tight_layout()
+    plt.grid(axis="y", linestyle="--", alpha=0.3)
+    plt.show()
